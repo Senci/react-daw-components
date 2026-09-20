@@ -13,5 +13,11 @@ const config: StorybookConfig = {
   docs: {
     autodocs: 'tag',
   },
+  viteFinal: async (config) => {
+    if (process.env.GITHUB_ACTIONS) {
+      config.base = '/react-daw-components/';
+    }
+    return config;
+  },
 };
 export default config;

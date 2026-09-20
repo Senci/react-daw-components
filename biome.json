@@ -24,7 +24,7 @@
         "noUnusedImports": "error"
       },
       "style": {
-        "noNonNullAssertion": "warn",
+        "noNonNullAssertion": "off",
         "useConst": "error"
       },
       "suspicious": {

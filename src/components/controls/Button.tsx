@@ -5,6 +5,9 @@ export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   size?: 'small' | 'medium' | 'large';
 }
 
+type ButtonVariant = NonNullable<ButtonProps['variant']>;
+type ButtonSize = NonNullable<ButtonProps['size']>;
+
 const baseStyles: React.CSSProperties = {
   display: 'inline-flex',
   alignItems: 'center',
@@ -16,7 +19,7 @@ const baseStyles: React.CSSProperties = {
   transition: 'background-color 0.15s ease, color 0.15s ease',
 };
 
-const variantStyles: Record<ButtonProps['variant'], React.CSSProperties> = {
+const variantStyles: Record<ButtonVariant, React.CSSProperties> = {
   primary: {
     backgroundColor: 'var(--daw-accent)',
     color: 'white',
@@ -32,7 +35,7 @@ const variantStyles: Record<ButtonProps['variant'], React.CSSProperties> = {
   },
 };
 
-const sizeStyles: Record<ButtonProps['size'], React.CSSProperties> = {
+const sizeStyles: Record<ButtonSize, React.CSSProperties> = {
   small: { padding: '0.25rem 0.75rem', fontSize: '0.75rem' },
   medium: { padding: '0.5rem 1rem', fontSize: '0.875rem' },
   large: { padding: '0.75rem 1.5rem', fontSize: '1rem' },

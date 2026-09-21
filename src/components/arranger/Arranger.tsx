@@ -1,5 +1,6 @@
-import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
+import { useState, useCallback, useMemo, useRef, useEffect, useSyncExternalStore } from 'react';
 import { createTimelineGeometry, type TimelineGeometry } from '../../core/geometry/timeline';
+import { useTimelineGeometry } from '../../core/geometry/timelineHooks';
 import { createCommandHistory, type CommandHistory, createDragTransaction } from '../../core/history/history';
 import { createSelectionModel, type SelectionModel, selectClipsInRange } from '../../core/selection/selection';
 import { createArrangerSnapEngine, type SnapEngine } from '../../core/snapping/snap';
@@ -8,6 +9,7 @@ import { createMidiClip, createAudioClip, type Clip, type ClipId } from '../../c
 import { tick, type Tick, type TimeSignature, createTimeSignature, DEFAULT_TIME_SIGNATURE } from '../../core/time/tick';
 import { createMidiNote } from '../../core/model/clip';
 import { MoveClipsCommand, ResizeClipCommand, AddMidiNoteCommand, type Command } from '../../core/commands/commands';
+import { createProjectStore, type ProjectStore } from '../../core/model/project';
 import { TimelineRuler } from '../timeline/TimelineRuler';
 import { Playhead } from '../timeline/Playhead';
 import { TrackComponent } from './Track';
@@ -25,23 +27,38 @@ export function Arranger({
   timeSignature = createTimeSignature(4, 4),
   tempo = { bpm: 120 }
 }: ArrangerProps) {
-  // Core models
-  const [tracks, setTracks] = useState<Track[]>(initialTracks.length > 0 ? initialTracks : [
-    createMidiTrack(0, 'MIDI Track 1'),
-    createAudioTrack(1, 'Audio Track 1'),
-    createMidiTrack(2, 'MIDI Track 2'),
-  ]);
-  
-  // Editor state
-  const [geometry] = useState(() => createTimelineGeometry('arranger', { 
-    timeSignature, 
-    tempo,
-    width: 1200,
-    height: 600,
-  }));
-  
-  const [selection, setSelection] = useState(() => createSelectionModel());
+  // Project store - single source of truth
+  const [projectStore] = useState(() => {
+    const store = createProjectStore({ initialTracks, timeSignature, tempo });
+    return store;
+  });
+
+  // History - created after projectStore to avoid circular deps
   const [history] = useState(() => createCommandHistory());
+  
+  // Connect history to projectStore
+  useEffect(() => {
+    projectStore.setHistory(history);
+  }, [projectStore, history]);
+
+  // Reactive selectors using useSyncExternalStore
+  const tracks = useSyncExternalStore(
+    projectStore.subscribe.bind(projectStore),
+    () => projectStore.tracks,
+    () => projectStore.tracks
+  );
+  
+  const selection = useSyncExternalStore(
+    projectStore.subscribe.bind(projectStore),
+    () => projectStore.selection,
+    () => projectStore.selection
+  );
+
+  // Editor state
+  const [geometry, geometryActions] = useTimelineGeometry({
+    initialConfig: { timeSignature, tempo, width: 1200, height: 600 }
+  });
+  
   const [snapEngine] = useState(() => createArrangerSnapEngine([]));
   const [playheadTick, setPlayheadTick] = useState(tick(0));
   const [isPlaying, setIsPlaying] = useState(false);
@@ -52,6 +69,7 @@ export function Arranger({
     clipIds: ClipId[];
     trackId: TrackId;
     type: 'move' | 'resize-start' | 'resize-end' | 'loop' | 'marquee';
+    deltaX: number;
   } | null>(null);
   
   // Viewport refs
@@ -62,7 +80,7 @@ export function Arranger({
   useEffect(() => {
     const handleResize = () => {
       if (containerRef.current) {
-        geometry.setViewportSize(
+        geometryActions.setViewportSize(
           containerRef.current.clientWidth,
           containerRef.current.clientHeight
         );
@@ -72,7 +90,7 @@ export function Arranger({
     handleResize();
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
-  }, [geometry]);
+  }, [geometryActions]);
   
   // Update snap engine when tracks change
   useEffect(() => {
@@ -86,12 +104,12 @@ export function Arranger({
     if (e.ctrlKey || e.metaKey) {
       e.preventDefault();
       const zoomFactor = e.deltaY > 0 ? 0.9 : 1.1;
-      geometry.zoomAt(e.clientX, zoomFactor);
+      geometryActions.zoomAt(e.clientX, zoomFactor);
     } else {
       e.preventDefault();
-      geometry.scrollBy(e.deltaX);
+      geometryActions.scrollBy(e.deltaX);
     }
-  }, [geometry]);
+  }, [geometryActions]);
   
   // Pointer handlers
   const handlePointerDown = useCallback((e: React.PointerEvent) => {
@@ -122,6 +140,7 @@ export function Arranger({
           clipIds: [clipId],
           trackId: track.id,
           type: 'resize-start',
+          deltaX: 0,
         });
       } else if (resizeEnd) {
         setDragState({
@@ -131,6 +150,7 @@ export function Arranger({
           clipIds: [clipId],
           trackId: track.id,
           type: 'resize-end',
+          deltaX: 0,
         });
       } else if (loopHandle) {
         setDragState({
@@ -140,19 +160,19 @@ export function Arranger({
           clipIds: [clipId],
           trackId: track.id,
           type: 'loop',
+          deltaX: 0,
         });
       } else {
         // Move clip(s)
         const isMultiSelect = e.shiftKey || e.metaKey || e.ctrlKey;
         if (isMultiSelect) {
-          setSelection(prev => {
-            if (prev.isClipSelected(clipId)) {
-              return prev.deselectClip(clipId);
-            }
-            return prev.selectClip(clipId, track.id, true);
-          });
+          projectStore.setSelection(
+            selection.isClipSelected(clipId)
+              ? selection.deselectClip(clipId)
+              : selection.selectClip(clipId, track.id, true)
+          );
         } else {
-          setSelection(prev => prev.selectClip(clipId, track.id));
+          projectStore.setSelection(selection.selectClip(clipId, track.id));
         }
         
         const selectedIds = selection.getSelectedClipIds().length > 0 
@@ -166,6 +186,7 @@ export function Arranger({
           clipIds: selectedIds,
           trackId: track.id,
           type: 'move',
+          deltaX: 0,
         });
       }
     } else {
@@ -177,13 +198,14 @@ export function Arranger({
         clipIds: [],
         trackId: track.id,
         type: 'marquee',
+        deltaX: 0,
       });
     }
     
     if (e.target instanceof HTMLElement) {
       e.target.setPointerCapture(e.pointerId);
     }
-  }, [geometry, snapEngine, selection, timeSignature, tracks]);
+  }, [geometry, snapEngine, selection, timeSignature, tracks, projectStore]);
   
   const handlePointerMove = useCallback((e: React.PointerEvent) => {
     if (!dragState?.active) return;
@@ -193,18 +215,17 @@ export function Arranger({
     const snapped = snapEngine.snap(currentTick, timeSignature);
     const deltaX = e.clientX - dragState.startX;
     
+    setDragState(prev => prev ? { ...prev, deltaX } : null);
+    
     switch (dragState.type) {
       case 'move': {
-        const deltaTicks = (snapped.snappedTick - dragState.startTick) as Tick;
-        // Preview move
+        // Preview handled by dragOffset in TrackComponent
         break;
       }
       case 'resize-start': {
-        const deltaTicks = (dragState.startTick - snapped.snappedTick) as Tick;
         break;
       }
       case 'resize-end': {
-        const deltaTicks = (snapped.snappedTick - dragState.startTick) as Tick;
         break;
       }
       case 'loop': {
@@ -216,11 +237,11 @@ export function Arranger({
         const endTick = snapped.snappedTick;
         const [minTick, maxTick] = startTick < endTick ? [startTick, endTick] : [endTick, startTick];
         const newSelection = selectClipsInRange(selection, tracks.flatMap(t => t.clips), minTick, maxTick, [dragState.trackId]);
-        setSelection(newSelection);
+        projectStore.setSelection(newSelection);
         break;
       }
     }
-  }, [dragState, geometry, snapEngine, selection, timeSignature, tracks]);
+  }, [dragState, geometry, snapEngine, selection, timeSignature, tracks, projectStore]);
   
   const handlePointerUp = useCallback((e: React.PointerEvent) => {
     if (!dragState?.active) return;
@@ -237,20 +258,20 @@ export function Arranger({
         const deltaTicks = (snapped.snappedTick - dragState.startTick) as Tick;
         if (deltaTicks !== 0) {
           for (const clipId of dragState.clipIds) {
-            commands.push(new MoveClipsCommand(project as any, [clipId], deltaTicks));
+            commands.push(new MoveClipsCommand(projectStore, [clipId], deltaTicks));
           }
         }
         break;
       }
       case 'resize-start': {
         for (const clipId of dragState.clipIds) {
-          commands.push(new ResizeClipCommand(project as any, clipId, dragState.startTick - snapped.snappedTick, true));
+          commands.push(new ResizeClipCommand(projectStore, clipId, tick(dragState.startTick - snapped.snappedTick), true));
         }
         break;
       }
       case 'resize-end': {
         for (const clipId of dragState.clipIds) {
-          commands.push(new ResizeClipCommand(project as any, clipId, snapped.snappedTick - dragState.startTick, false));
+          commands.push(new ResizeClipCommand(projectStore, clipId, tick(snapped.snappedTick - dragState.startTick), false));
         }
         break;
       }
@@ -268,7 +289,7 @@ export function Arranger({
     if (e.target instanceof HTMLElement) {
       e.target.releasePointerCapture(e.pointerId);
     }
-  }, [dragState, geometry, snapEngine, timeSignature, history]);
+  }, [dragState, geometry, snapEngine, timeSignature, history, projectStore]);
   
   // Track management
   const addTrack = useCallback((type: 'midi' | 'audio') => {
@@ -276,12 +297,12 @@ export function Arranger({
     const newTrack = type === 'midi' 
       ? createMidiTrack(newIndex, `MIDI Track ${newIndex + 1}`)
       : createAudioTrack(newIndex, `Audio Track ${newIndex + 1}`);
-    setTracks(prev => [...prev, newTrack]);
-  }, [tracks.length]);
+    projectStore.addTrack(newTrack);
+  }, [tracks.length, projectStore]);
   
   const removeTrack = useCallback((trackId: TrackId) => {
-    setTracks(prev => prev.filter(t => t.id !== trackId).map((t, i) => ({ ...t, index: i })));
-  }, []);
+    projectStore.removeTrack(trackId);
+  }, [projectStore]);
   
   // Render tracks
   const trackComponents = tracks.map((track, index) => (
@@ -295,6 +316,7 @@ export function Arranger({
       dragState={dragState}
       snapEngine={snapEngine}
       timeSignature={timeSignature}
+      history={history}
     />
   ));
   
@@ -344,7 +366,7 @@ export function Arranger({
         <Playhead 
           tick={playheadTick} 
           geometry={geometry} 
-          height={geometry.height}
+          height={geometry.getConfig().height}
           rulerHeight={geometry.rulerHeight}
         />
         
@@ -354,19 +376,22 @@ export function Arranger({
           tracks={tracks}
         />
         
-        {dragState?.type === 'marquee' && (
-          <div className="marquee-selection" style={{
-            position: 'absolute',
-            left: Math.min(dragState.startX, dragState.startX + deltaX),
-            top: geometry.rulerHeight,
-            width: Math.abs(deltaX),
-            height: geometry.trackHeight * tracks.length,
-            border: '1px dashed var(--daw-selection-border)',
-            background: 'var(--daw-selection)',
-            pointerEvents: 'none',
-            zIndex: 10,
-          }} />
-        )}
+        {dragState?.type === 'marquee' && (() => {
+            const deltaX = dragState.deltaX;
+            return (
+              <div className="marquee-selection" style={{
+                position: 'absolute',
+                left: Math.min(dragState.startX, dragState.startX + deltaX),
+                top: geometry.rulerHeight,
+                width: Math.abs(deltaX),
+                height: geometry.trackHeight * tracks.length,
+                border: '1px dashed var(--daw-selection-border)',
+                background: 'var(--daw-selection)',
+                pointerEvents: 'none',
+                zIndex: 10,
+              }} />
+            );
+          })()}
       </div>
     </div>
   );

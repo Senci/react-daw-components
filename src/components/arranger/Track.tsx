@@ -1,10 +1,13 @@
 import { useRef, useEffect } from 'react';
 import { type Track, type TrackId } from '../../core/model/track';
-import { type Clip, type ClipId } from '../../core/model/clip';
+import { type Clip, type ClipId, isMidiClip, isAudioClip } from '../../core/model/clip';
 import { type TimelineGeometry } from '../../core/geometry/timeline';
 import { type SelectionModel } from '../../core/selection/selection';
 import { type SnapEngine } from '../../core/snapping/snap';
-import { type TimeSignature, type Tick } from '../../core/time/tick';
+import { type TimeSignature, type Tick, tick } from '../../core/time/tick';
+import { type CommandHistory, createCommandHistory } from '../../core/history/history';
+import { MidiClip } from '../clips/MidiClip';
+import { AudioClip } from '../clips/AudioClip';
 
 interface TrackProps {
   track: Track;
@@ -16,12 +19,13 @@ interface TrackProps {
     active: boolean;
     startX: number;
     startTick: Tick;
-    clipIds: string[];
-    trackId: string;
+    clipIds: ClipId[];
+    trackId: TrackId;
     type: 'move' | 'resize-start' | 'resize-end' | 'loop' | 'marquee';
   } | null;
   snapEngine: SnapEngine;
   timeSignature: TimeSignature;
+  history: CommandHistory;
 }
 
 export function TrackComponent({ 
@@ -33,11 +37,22 @@ export function TrackComponent({
   dragState, 
   snapEngine,
   timeSignature,
+  history,
 }: TrackProps) {
   const y = geometry.trackIndexToY(index);
   const height = geometry.trackHeight;
   const isSelected = selection.getSelectedTrackIds().includes(track.id);
   
+  // Calculate drag offset for move operations
+  const dragOffset = dragState?.active && dragState.type === 'move' && dragState.clipIds.length > 0
+    ? tick(snapEngine.snap(geometry.viewportXToTick(0), timeSignature).snappedTick - dragState.startTick)
+    : tick(0);
+  
+  const handleClipPointerDown = (e: React.PointerEvent, clipId: string) => {
+    e.stopPropagation();
+    onPointerDown(e);
+  };
+
   return (
     <div
       className={`arranger-track ${isSelected ? 'selected' : ''}`}
@@ -137,22 +152,47 @@ export function TrackComponent({
         </div>
         
         {/* Clips */}
-        {track.clips.map((clip) => (
-          <ClipComponent
-            key={clip.id}
-            clip={clip}
-            track={track}
-            geometry={geometry}
-            selection={selection}
-            snapEngine={snapEngine}
-            timeSignature={timeSignature}
-            isSelected={selection.isClipSelected(clip.id)}
-            isDragging={!!dragState?.active && dragState.clipIds.includes(clip.id)}
-            dragOffset={dragState?.active && dragState.type === 'move' && dragState.clipIds.includes(clip.id) 
-              ? (snapEngine.snap(geometry.viewportXToTick(0), timeSignature).snappedTick - dragState.startTick) 
-              : 0}
-          />
-        ))}
+        {track.clips.map((clip) => {
+          const clipIsDragging = !!dragState?.active && dragState.clipIds.includes(clip.id);
+          
+          if (isMidiClip(clip)) {
+            return (
+              <MidiClip
+                key={clip.id}
+                clip={clip}
+                trackId={track.id}
+                geometry={geometry}
+                snapEngine={snapEngine}
+                timeSignature={timeSignature}
+                isSelected={selection.isClipSelected(clip.id)}
+                isDragging={clipIsDragging}
+                dragOffset={clipIsDragging ? dragOffset : tick(0)}
+                onPointerDown={handleClipPointerDown}
+                history={history}
+              />
+            );
+          }
+          
+          if (isAudioClip(clip)) {
+            return (
+              <AudioClip
+                key={clip.id}
+                clip={clip}
+                trackId={track.id}
+                geometry={geometry}
+                snapEngine={snapEngine}
+                timeSignature={timeSignature}
+                isSelected={selection.isClipSelected(clip.id)}
+                isDragging={clipIsDragging}
+                dragOffset={clipIsDragging ? dragOffset : tick(0)}
+                onPointerDown={handleClipPointerDown}
+                history={history}
+              />
+            );
+          }
+          
+          return null;
+        })}
         
         {/* Drop zone for new clips */}
         <div 
@@ -164,189 +204,8 @@ export function TrackComponent({
   );
 }
 
-interface ClipComponentProps {
-  clip: {
-    id: string;
-    type: 'midi' | 'audio';
-    startTick: number;
-    durationTicks: number;
-    name: string;
-    color: string;
-    loop: { enabled: boolean; endTick: number };
-    notes?: Array<{
-      id: string;
-      startTick: number;
-      durationTicks: number;
-      pitch: number;
-      velocity: number;
-    }>;
-  };
-  track: any;
-  geometry: any;
-  selection: any;
-  snapEngine: any;
-  timeSignature: any;
-  isSelected: boolean;
-  isDragging: boolean;
-  dragOffset: number;
-}
-
-function ClipComponent({ 
-  clip, 
-  track, 
-  geometry, 
-  selection, 
-  snapEngine, 
-  timeSignature, 
-  isSelected, 
-  isDragging, 
-  dragOffset,
-}: ClipComponentProps) {
-  const x = geometry.tickToViewportX(clip.startTick + dragOffset);
-  const width = Math.max(2, clip.durationTicks * geometry.pixelsPerTick);
-  const isMidi = clip.type === 'midi';
-  
-  return (
-    <div
-      className={`arranger-clip ${isSelected ? 'selected' : ''} ${isDragging ? 'dragging' : ''} ${clip.type}`}
-      data-clip-id={clip.id}
-      style={{
-        position: 'absolute',
-        left: x,
-        top: 4,
-        width: width,
-        height: geometry.trackHeight - 8,
-        background: clip.color,
-        border: isSelected ? '2px solid var(--daw-selection-border)' : '1px solid rgba(0,0,0,0.2)',
-        borderRadius: 4,
-        cursor: 'grab',
-        display: 'flex',
-        alignItems: 'center',
-        padding: '0 6px',
-        overflow: 'hidden',
-        boxShadow: isSelected ? '0 0 0 2px var(--daw-selection-border)' : '0 1px 3px rgba(0,0,0,0.3)',
-        zIndex: isDragging ? 100 : isSelected ? 10 : 1,
-        transition: isDragging ? 'none' : 'box-shadow 0.15s ease',
-        opacity: isDragging ? 0.8 : 1,
-      }}
-      onPointerDown={(e) => {
-        e.stopPropagation();
-      }}
-    >
-      {/* Clip content */}
-      <div style={{ flex: 1, overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>
-        <span style={{ 
-          color: 'white', 
-          fontSize: '11px', 
-          fontWeight: 500,
-          textShadow: '0 1px 2px rgba(0,0,0,0.5)',
-        }}>
-          {clip.name}
-        </span>
-      </div>
-      
-      {/* Resize handles */}
-      <div 
-        className="resize-handle resize-start"
-        data-resize-start
-        style={{
-          position: 'absolute',
-          left: -4,
-          top: 0,
-          bottom: 0,
-          width: 8,
-          cursor: 'ew-resize',
-          background: 'transparent',
-          zIndex: 10,
-        }}
-      />
-      <div 
-        className="resize-handle resize-end"
-        data-resize-end
-        style={{
-          position: 'absolute',
-          right: -4,
-          top: 0,
-          bottom: 0,
-          width: 8,
-          cursor: 'ew-resize',
-          background: 'transparent',
-          zIndex: 10,
-        }}
-      />
-      
-      {/* Loop handle */}
-      {clip.loop.enabled && (
-        <div 
-          className="loop-handle"
-          data-loop-handle
-          style={{
-            position: 'absolute',
-            right: 2,
-            bottom: 2,
-            width: 12,
-            height: 12,
-            background: 'rgba(255,255,255,0.9)',
-            borderRadius: '50%',
-            cursor: 'ew-resize',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            fontSize: '8px',
-            color: clip.color,
-            fontWeight: 'bold',
-            zIndex: 20,
-            boxShadow: '0 1px 3px rgba(0,0,0,0.3)',
-          }}
-        >
-          ⟳
-        </div>
-      )}
-      
-      {/* MIDI note preview */}
-      {isMidi && clip.notes && clip.notes.length > 0 && (
-        <div 
-          className="midi-preview"
-          style={{
-            position: 'absolute',
-            top: 2,
-            left: 4,
-            right: 4,
-            bottom: 2,
-            display: 'flex',
-            flexDirection: 'column',
-            justifyContent: 'space-between',
-            pointerEvents: 'none',
-          }}
-        >
-          {clip.notes.slice(0, 20).map((note: any, i: number) => {
-              const leftPercent = ((Number(note.startTick) - clip.startTick) / clip.durationTicks) * 100;
-              const widthPercent = Math.max(2, (Number(note.durationTicks) / clip.durationTicks) * 100);
-              const topPercent = (1 - (Number(note.pitch) - 36) / 48) * 100;
-              return (
-                <div
-                  key={i}
-                  style={{
-                    position: 'absolute',
-                    left: `${leftPercent}%`,
-                    width: `${widthPercent}%`,
-                    top: `${topPercent}%`,
-                    height: 'max(1px, 2%)',
-                    background: 'rgba(255,255,255,0.7)',
-                    borderRadius: '1px',
-                    opacity: 0.8,
-                  }}
-                />
-              );
-            })}
-        </div>
-      )}
-    </div>
-  );
-}
-
 export function TrackHeader({ track, onNameChange, onColorChange, onMute, onSolo, onArm }: { 
-  track: any; 
+  track: Track; 
   onNameChange: (name: string) => void;
   onColorChange: (color: string) => void;
   onMute: () => void;

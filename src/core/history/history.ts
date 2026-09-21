@@ -167,7 +167,7 @@ export class CommandHistory {
       // Add all to past
       this.past.push(entry, ...groupEntries);
     } else {
-      this.past.push({ command: entry.command, result, timestamp: Date.now() });
+      this.past.push({ command: entry.command, result, timestamp: Date.now(), groupId: undefined });
     }
     
     return result;
@@ -272,12 +272,16 @@ export class CommandHistory {
       // Add all commands to history with the transaction's groupId
       // They were already executed during the transaction, so we just record them
       for (let i = 0; i < commands.length; i++) {
-        this.past.push({
-          command: commands[i],
-          result: results[i],
-          timestamp: timestamp + i,
-          groupId: id,
-        });
+        const command = commands[i];
+        const result = results[i];
+        if (command && result) {
+          this.past.push({
+            command,
+            result,
+            timestamp: timestamp + i,
+            groupId: id,
+          });
+        }
       }
       
       // Trim history if needed
@@ -301,7 +305,9 @@ export class CommandHistory {
     for (let i = this.currentTransaction.commands.length - 1; i >= 0; i--) {
       const cmd = this.currentTransaction.commands[i];
       const result = this.currentTransaction.results[i];
-      cmd.undo(result.undoData);
+      if (cmd && result) {
+        cmd.undo(result.undoData);
+      }
     }
 
     this.currentTransaction = null;

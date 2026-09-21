@@ -147,7 +147,7 @@ export function TrackComponent({
             snapEngine={snapEngine}
             timeSignature={timeSignature}
             isSelected={selection.isClipSelected(clip.id)}
-            isDragging={dragState?.active && dragState.clipIds.includes(clip.id)}
+            isDragging={!!dragState?.active && dragState.clipIds.includes(clip.id)}
             dragOffset={dragState?.active && dragState.type === 'move' && dragState.clipIds.includes(clip.id) 
               ? (snapEngine.snap(geometry.viewportXToTick(0), timeSignature).snappedTick - dragState.startTick) 
               : 0}
@@ -165,7 +165,22 @@ export function TrackComponent({
 }
 
 interface ClipComponentProps {
-  clip: any;
+  clip: {
+    id: string;
+    type: 'midi' | 'audio';
+    startTick: number;
+    durationTicks: number;
+    name: string;
+    color: string;
+    loop: { enabled: boolean; endTick: number };
+    notes?: Array<{
+      id: string;
+      startTick: number;
+      durationTicks: number;
+      pitch: number;
+      velocity: number;
+    }>;
+  };
   track: any;
   geometry: any;
   selection: any;
@@ -289,7 +304,7 @@ function ClipComponent({
       )}
       
       {/* MIDI note preview */}
-      {isMidi && clip.notes.length > 0 && (
+      {isMidi && clip.notes && clip.notes.length > 0 && (
         <div 
           className="midi-preview"
           style={{
@@ -304,21 +319,26 @@ function ClipComponent({
             pointerEvents: 'none',
           }}
         >
-          {clip.notes.slice(0, 20).map((note: any, i: number) => (
-            <div
-              key={i}
-              style={{
-                position: 'absolute',
-                left: ((note.startTick - clip.startTick) / clip.durationTicks) * 100 + '%',
-                width: Math.max(2, (note.durationTicks / clip.durationTicks) * 100 + '%'),
-                top: (1 - (note.pitch - 36) / 48) * 100 + '%',
-                height: 'max(1px, 2%)',
-                background: 'rgba(255,255,255,0.7)',
-                borderRadius: '1px',
-                opacity: 0.8,
-              }}
-            />
-          ))}
+          {clip.notes.slice(0, 20).map((note: any, i: number) => {
+              const leftPercent = ((Number(note.startTick) - clip.startTick) / clip.durationTicks) * 100;
+              const widthPercent = Math.max(2, (Number(note.durationTicks) / clip.durationTicks) * 100);
+              const topPercent = (1 - (Number(note.pitch) - 36) / 48) * 100;
+              return (
+                <div
+                  key={i}
+                  style={{
+                    position: 'absolute',
+                    left: `${leftPercent}%`,
+                    width: `${widthPercent}%`,
+                    top: `${topPercent}%`,
+                    height: 'max(1px, 2%)',
+                    background: 'rgba(255,255,255,0.7)',
+                    borderRadius: '1px',
+                    opacity: 0.8,
+                  }}
+                />
+              );
+            })}
         </div>
       )}
     </div>
